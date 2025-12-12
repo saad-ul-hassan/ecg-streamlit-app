@@ -1,6 +1,7 @@
 streamlit
-tensorflow==2.12.0
+tensorflow # Version hatane se latest compatible version install hoga
 numpy
 pandas
 joblib
 scikit-learn
+h5py
