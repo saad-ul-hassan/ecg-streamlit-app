@@ -13,14 +13,15 @@ import pandas as pd
 import joblib
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+import h5py # Ensure h5py is imported for model handling
 
 # --- Configuration (Based on your training steps) ---
-# Sequence Length jo aapne Step 7 mein use ki thi
+# Sequence Length jo aapne training mein use ki thi
 SEQ_LEN = 500
-MODEL_PATH = "ecg_model_final.h5"  # Ensure this file name matches the one you uploaded to GitHub
-ENCODER_PATH = "label_encoder.joblib" # Ensure this file name matches the one you uploaded to GitHub
+MODEL_PATH = "ecg_model_final.h5"  # File name on GitHub
+ENCODER_PATH = "label_encoder.joblib" # File name on GitHub
 
-# --- Data Pre-processing Function (From your Step 7 logic) ---
+# --- Data Pre-processing Function ---
 def pad_truncate(sig, length=SEQ_LEN):
     """Pads or truncates a 1D signal to a fixed length (500)."""
     sig = np.asarray(sig, dtype=float)
@@ -28,7 +29,7 @@ def pad_truncate(sig, length=SEQ_LEN):
         # Truncate
         return sig[:length]
     else:
-        # Pad with zeros (important: padding ensures consistent input size)
+        # Pad with zeros
         pad = np.zeros(length - len(sig))
         return np.concatenate([sig, pad])
 
@@ -38,29 +39,30 @@ def load_assets():
     """Loads the model and LabelEncoder once."""
     try:
         # 1. Load Model
-        model = load_model(MODEL_PATH)
+        # Using compile=False as best practice for loading external models
+        model = load_model(MODEL_PATH, compile=False)
+
         # 2. Load Label Encoder
         le = joblib.load(ENCODER_PATH)
 
         # 3. Get Class Names
-        # Check if le has been fit properly
         if hasattr(le, 'classes_'):
             class_names = le.classes_.tolist()
         else:
-            st.error("Label Encoder is corrupted or not properly saved.")
-            return None, None, None
+            # Fallback if classes_ attribute is missing (should not happen if saved properly)
+            class_names = ['Class 0', 'Class 1', 'Class 2', 'Class 3', 'Class 4']
 
         st.sidebar.success(f"Model and Encoder loaded successfully.")
         return model, le, class_names
 
     except FileNotFoundError as e:
-        st.error(f"FATAL ERROR: Required file not found: {e}. Ensure all files are committed to GitHub.")
+        st.sidebar.error(f"FATAL ERROR: Required file not found: {e}. Check file names on GitHub.")
         return None, None, None
     except Exception as e:
-        st.error(f"FATAL ERROR during model loading: {e}. Check TensorFlow/h5py version compatibility.")
+        st.sidebar.error(f"FATAL ERROR during model loading: {e}. Check compatibility/file size.")
         return None, None, None
 
-# Load the assets
+# Load the assets outside the function to run when the app starts
 model, le, CLASS_NAMES = load_assets()
 
 # --- Streamlit App UI and Logic ---
@@ -68,13 +70,12 @@ model, le, CLASS_NAMES = load_assets()
 st.title("❤️ ECG Heart Disease Classification (1D CNN)")
 st.markdown("---")
 
-# 🛑 SAFEGUARD: Agar loading fail hui to yahan app ruk jayegi
+# 🛑 SAFEGUARD: Agar loading fail hui to yahan app ruk jayegi (Fixing TypeError)
 if model is None or le is None or CLASS_NAMES is None:
-    # Error message already shown in load_assets()
+    st.error("Application could not start because Model or Encoder files failed to load. Please check the GitHub repository contents and names.")
     st.stop()
-
 # Agar sab kuch theek hai, toh info dikhayein
-st.caption(f"Model configured for {SEQ_LEN} time steps and {len(CLASS_NAMES)} classes: {', '.join(CLASS_NAMES)}")
+st.caption(f"Model configured for **{SEQ_LEN}** time steps and **{len(CLASS_NAMES)}** classes: *{', '.join(CLASS_NAMES)}*")
 
 
 uploaded_file = st.file_uploader("Upload ECG CSV File", type=["csv"], help="The CSV should contain raw ECG signal values (one row per signal).")
@@ -87,7 +88,7 @@ if uploaded_file is not None:
         # Determine signals list (Assuming each row is a signal of varying length)
         signals_list = []
         for index in range(data.shape[0]):
-            # Use to_numeric to safely extract signal data
+            # Safely extract numeric data from the row
             row_data = pd.to_numeric(data.iloc[index].values, errors='coerce')
             signals_list.append(row_data[~np.isnan(row_data)])
 
@@ -102,8 +103,9 @@ if uploaded_file is not None:
         X_predict = X_predict[..., np.newaxis]
 
         st.subheader("📊 Signal Preview (First Signal)")
+        # Plot the first signal
         st.line_chart(X_predict[0].flatten())
-        st.info(f"Processed {len(signals_list)} signals, each standardized to length {SEQ_LEN}.")
+        st.info(f"Processed {len(signals_list)} signal(s), each standardized to length {SEQ_LEN}.")
 
         # 3. Prediction
         st.subheader("🤖 Prediction Result")
@@ -111,18 +113,19 @@ if uploaded_file is not None:
 
         if predict_button:
             with st.spinner("Classifying ECG signals..."):
+                # Predict on the prepared batch of signals
                 pred_probas = model.predict(X_predict, verbose=0)
 
-                # Handle Binary vs Multi-class (based on model output shape)
+                # Handle Binary vs Multi-class
                 if model.output_shape[-1] == 1: # Binary classification
                     predicted_classes_indices = (pred_probas.flatten() >= 0.5).astype(int)
-                else: # Multi-class classification (5 classes in your case)
+                else: # Multi-class classification
                     predicted_classes_indices = np.argmax(pred_probas, axis=1)
 
                 # Convert index to actual class name
                 predicted_class_names = le.inverse_transform(predicted_classes_indices)
 
-                # 4. Display Results (for the first signal only)
+                # 4. Display Results (Focus on the first signal for display)
                 st.markdown("---")
                 st.markdown(f"**Result for the first uploaded signal:**")
 
