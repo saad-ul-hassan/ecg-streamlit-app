@@ -13,13 +13,13 @@ import pandas as pd
 import joblib
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-import h5py # Ensure h5py is imported for model handling
+import h5py
 
 # --- Configuration (Based on your training steps) ---
 # Sequence Length jo aapne training mein use ki thi
 SEQ_LEN = 500
-MODEL_PATH = "ecg_model_final.h5"  # File name on GitHub
-ENCODER_PATH = "label_encoder.joblib" # File name on GitHub
+MODEL_PATH = "ecg_model_final.h5"  # Ensure this file name matches the one on GitHub
+ENCODER_PATH = "label_encoder.joblib" # Ensure this file name matches the one on GitHub
 
 # --- Data Pre-processing Function ---
 def pad_truncate(sig, length=SEQ_LEN):
@@ -39,30 +39,43 @@ def load_assets():
     """Loads the model and LabelEncoder once."""
     try:
         # 1. Load Model
-        # Using compile=False as best practice for loading external models
+        # Using compile=False to avoid re-compiling if custom objects are missing
         model = load_model(MODEL_PATH, compile=False)
 
         # 2. Load Label Encoder
         le = joblib.load(ENCODER_PATH)
 
-        # 3. Get Class Names
-        if hasattr(le, 'classes_'):
-            class_names = le.classes_.tolist()
+        # 3. Get Class Names and Validate (FIX for join() TypeError)
+        class_names = []
+        if hasattr(le, 'classes_') and len(le.classes_) > 0:
+            raw_classes = le.classes_.tolist()
+
+            # Filter/Validate to ensure all elements are clean strings
+            valid_classes = [str(c) for c in raw_classes if str(c).strip()]
+
+            if len(valid_classes) > 0:
+                class_names = valid_classes
+            else:
+                # Fallback: Use generic classes if encoder data is corrupt
+                st.sidebar.warning("Label Encoder is corrupt; using generic class names.")
+                class_names = ['Class 0', 'Class 1', 'Class 2', 'Class 3', 'Class 4']
+
         else:
-            # Fallback if classes_ attribute is missing (should not happen if saved properly)
+            # Fallback: Use generic classes if classes_ attribute is missing
+            st.sidebar.warning("Label Encoder did not contain classes; using generic class names.")
             class_names = ['Class 0', 'Class 1', 'Class 2', 'Class 3', 'Class 4']
 
         st.sidebar.success(f"Model and Encoder loaded successfully.")
         return model, le, class_names
 
     except FileNotFoundError as e:
-        st.sidebar.error(f"FATAL ERROR: Required file not found: {e}. Check file names on GitHub.")
+        st.sidebar.error(f"FATAL ERROR: Required file not found: {e}. Check file names.")
         return None, None, None
     except Exception as e:
         st.sidebar.error(f"FATAL ERROR during model loading: {e}. Check compatibility/file size.")
         return None, None, None
 
-# Load the assets outside the function to run when the app starts
+# Load the assets
 model, le, CLASS_NAMES = load_assets()
 
 # --- Streamlit App UI and Logic ---
@@ -70,11 +83,12 @@ model, le, CLASS_NAMES = load_assets()
 st.title("❤️ ECG Heart Disease Classification (1D CNN)")
 st.markdown("---")
 
-# 🛑 SAFEGUARD: Agar loading fail hui to yahan app ruk jayegi (Fixing TypeError)
+# 🛑 SAFEGUARD: Agar loading fail hui to yahan app ruk jayegi
 if model is None or le is None or CLASS_NAMES is None:
-    st.error("Application could not start because Model or Encoder files failed to load. Please check the GitHub repository contents and names.")
+    st.error("Application could not start because Model or Encoder files failed to load. Please check the GitHub repository contents and file paths.")
     st.stop()
-# Agar sab kuch theek hai, toh info dikhayein
+
+# Agar sab kuch theek hai, toh info dikhayein (This was Line 78)
 st.caption(f"Model configured for **{SEQ_LEN}** time steps and **{len(CLASS_NAMES)}** classes: *{', '.join(CLASS_NAMES)}*")
 
 
@@ -85,10 +99,8 @@ if uploaded_file is not None:
         # 1. Load Data
         data = pd.read_csv(uploaded_file, header=None)
 
-        # Determine signals list (Assuming each row is a signal of varying length)
         signals_list = []
         for index in range(data.shape[0]):
-            # Safely extract numeric data from the row
             row_data = pd.to_numeric(data.iloc[index].values, errors='coerce')
             signals_list.append(row_data[~np.isnan(row_data)])
 
@@ -99,11 +111,9 @@ if uploaded_file is not None:
         # 2. Pre-process Signals (Pad/Truncate and Reshape)
         processed_signals = [pad_truncate(sig) for sig in signals_list]
         X_predict = np.stack(processed_signals)
-        # Reshape for Conv1D: (samples, SEQ_LEN, 1)
         X_predict = X_predict[..., np.newaxis]
 
         st.subheader("📊 Signal Preview (First Signal)")
-        # Plot the first signal
         st.line_chart(X_predict[0].flatten())
         st.info(f"Processed {len(signals_list)} signal(s), each standardized to length {SEQ_LEN}.")
 
@@ -113,36 +123,38 @@ if uploaded_file is not None:
 
         if predict_button:
             with st.spinner("Classifying ECG signals..."):
-                # Predict on the prepared batch of signals
                 pred_probas = model.predict(X_predict, verbose=0)
 
-                # Handle Binary vs Multi-class
-                if model.output_shape[-1] == 1: # Binary classification
+                # Determine prediction class
+                if model.output_shape[-1] == 1:
                     predicted_classes_indices = (pred_probas.flatten() >= 0.5).astype(int)
-                else: # Multi-class classification
+                else:
                     predicted_classes_indices = np.argmax(pred_probas, axis=1)
 
                 # Convert index to actual class name
-                predicted_class_names = le.inverse_transform(predicted_classes_indices)
+                # Note: We must ensure le.classes_ is used correctly, even if we are displaying hardcoded classes
+                predicted_class_names = [CLASS_NAMES[idx] for idx in predicted_classes_indices]
 
                 # 4. Display Results (Focus on the first signal for display)
                 st.markdown("---")
                 st.markdown(f"**Result for the first uploaded signal:**")
 
-                # Get max probability for confidence
                 max_proba = np.max(pred_probas[0])
 
                 st.success(f"**Predicted Class:** **{predicted_class_names[0]}**")
                 st.write(f"Confidence: **{max_proba:.2f}**")
 
                 # Show all class probabilities in a detailed table
-                st.markdown("##### Detailed Probabilities:")
-                proba_df = pd.DataFrame({
-                    "Class": CLASS_NAMES,
-                    "Probability": pred_probas[0]
-                }).sort_values(by="Probability", ascending=False).reset_index(drop=True)
+                if len(pred_probas[0]) == len(CLASS_NAMES):
+                    st.markdown("##### Detailed Probabilities:")
+                    proba_df = pd.DataFrame({
+                        "Class": CLASS_NAMES,
+                        "Probability": pred_probas[0]
+                    }).sort_values(by="Probability", ascending=False).reset_index(drop=True)
 
-                st.dataframe(proba_df, use_container_width=True, hide_index=True)
+                    st.dataframe(proba_df, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("Could not display detailed probabilities due to mismatch in classes and prediction length.")
 
 
     except Exception as e:
